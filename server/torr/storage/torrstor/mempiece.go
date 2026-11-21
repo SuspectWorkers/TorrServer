@@ -22,15 +22,11 @@ func (p *MemPiece) WriteAt(b []byte, off int64) (n int, err error) {
 	defer p.mu.Unlock()
 
 	if p.buffer == nil {
-		go p.piece.cache.cleanPieces()
-		p.buffer = make([]byte, p.piece.cache.pieceLength, p.piece.cache.pieceLength)
+		p.piece.cache.triggerClean()
+		p.buffer = p.piece.cache.allocBuffer()
 	}
 	n = copy(p.buffer[off:], b[:])
-	p.piece.Size += int64(n)
-	if p.piece.Size > p.piece.cache.pieceLength {
-		p.piece.Size = p.piece.cache.pieceLength
-	}
-	p.piece.Accessed = time.Now().Unix()
+	p.piece.addSize(int64(n), p.piece.cache.pieceLength, time.Now().Unix())
 	return
 }
 
@@ -49,9 +45,9 @@ func (p *MemPiece) ReadAt(b []byte, off int64) (n int, err error) {
 		return 0, io.EOF
 	}
 	n = copy(b, p.buffer[int(off) : int(off)+size][:])
-	p.piece.Accessed = time.Now().Unix()
-	if int64(len(b))+off >= p.piece.Size {
-		go p.piece.cache.cleanPieces()
+	pieceSize := p.piece.touch(time.Now().Unix())
+	if int64(len(b))+off >= pieceSize {
+		p.piece.cache.triggerClean()
 	}
 	if n == 0 {
 		return 0, io.EOF
@@ -69,10 +65,12 @@ func (p *MemPiece) allocated() int64 {
 
 func (p *MemPiece) Release() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.buffer != nil {
-		p.buffer = nil
+	buf := p.buffer
+	p.buffer = nil
+	p.mu.Unlock()
+
+	if buf != nil && p.piece != nil && p.piece.cache != nil {
+		p.piece.cache.freeBuffer(buf)
 	}
-	p.piece.Size = 0
-	p.piece.Complete = false
+	p.piece.resetStats()
 }

@@ -270,6 +270,8 @@
     "MergeAllM3U": "Combine M3U playlists",
     "MergeAllM3UHint": "Lists all files in one (http://host:port/playlistall/all.m3u) playlist instead of a separate playlist for each torrent.",
     "MobileAppSettings": "Players",
+    "PauseTimeout": "Pause Keep-Alive Timeout",
+    "PauseTimeoutHint": "How many seconds to keep torrent, cache and peers warm after pause or player disconnect (default 180, -1 to disable)",
     "PeersListenPort": "Peers Listen Port",
     "PeersListenPortHint": "1024 - 65535, 0 - random",
     "PreloadCache": "Preload Cache Before Play",

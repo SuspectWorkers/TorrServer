@@ -19,6 +19,12 @@ import (
 	"github.com/anacrolix/torrent/storage"
 )
 
+const (
+	defaultPauseWarmSeconds = 180
+	maxOpenDiskFiles        = 32
+	diskFileIdleSeconds     = 15
+)
+
 type Cache struct {
 	storage.TorrentImpl
 	storage *Storage
@@ -26,6 +32,7 @@ type Cache struct {
 	// filled is the eviction input: memory the pieces occupy (allocated buffers in RAM mode),
 	// recomputed by getRemPieces. It is not the downloaded byte count (see GetState).
 	capacity int64
+	muCap    sync.RWMutex
 	filled   int64
 	hash     metainfo.Hash
 
@@ -41,14 +48,28 @@ type Cache struct {
 	readers   map[*Reader]struct{}
 	muReaders sync.RWMutex
 
-	isRemove atomic.Bool
-	isClosed atomic.Bool
-	muRemove sync.Mutex
-	// muPrio serializes clearPriority and setLoadPriority so that the priority
-	// reset of a reader that has just closed cannot wipe the priorities a
-	// freshly created reader has already set.
+	isRemove   atomic.Bool
+	isClosed   atomic.Bool
+	preloading atomic.Bool
+	muRemove   sync.Mutex
+	// muPrio serializes priority updates so concurrent callers cannot wipe
+	// freshly assigned piece priorities.
 	muPrio  sync.Mutex
 	torrent *torrent.Torrent
+
+	bufPool   sync.Pool
+	cleanCh   chan struct{}
+	stopCh    chan struct{}
+	closeOnce sync.Once
+
+	muAct           sync.Mutex
+	lastFile        *torrent.File
+	lastOffset      int64
+	lastActive      int64
+	hadWarmPriority bool
+
+	muDiskPool sync.Mutex
+	openDisk   map[int]*DiskPiece
 }
 
 func NewCache(capacity int64, storage *Storage) *Cache {
@@ -58,6 +79,7 @@ func NewCache(capacity int64, storage *Storage) *Cache {
 		pieces:   make(map[int]*Piece),
 		storage:  storage,
 		readers:  make(map[*Reader]struct{}),
+		openDisk: make(map[int]*DiskPiece),
 	}
 
 	return ret
@@ -65,13 +87,24 @@ func NewCache(capacity int64, storage *Storage) *Cache {
 
 func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	log.TLogln("Create cache for:", info.Name, hash.HexString())
+	c.muCap.Lock()
 	if c.capacity == 0 {
 		c.capacity = info.PieceLength * 4
 	}
+	c.muCap.Unlock()
 
 	c.pieceLength = info.PieceLength
 	c.pieceCount = info.NumPieces()
 	c.hash = hash
+
+	pieceLen := info.PieceLength
+	c.bufPool = sync.Pool{
+		New: func() any {
+			return make([]byte, pieceLen)
+		},
+	}
+	c.cleanCh = make(chan struct{}, 1)
+	c.stopCh = make(chan struct{})
 
 	if settings.BTsets.UseDisk {
 		name := filepath.Join(settings.BTsets.TorrentsSavePath, hash.HexString())
@@ -85,31 +118,224 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 		c.pieces[i] = NewPiece(i, c)
 	}
 
-	go c.priorityWatchdog()
+	go c.cacheLoop()
 }
 
-// priorityWatchdog re-arms piece priorities while readers are active.
+// cacheLoop serializes background eviction and periodic priority re-arming.
 //
-// setLoadPriority is only reached through the cache cleanup path, which is
-// driven by piece reads and writes (see mempiece.go and diskpiece.go). Should
-// priorities ever end up cleared while a reader still needs data, nothing is
-// downloaded, so no piece I/O happens, so cleanup never runs and the
-// priorities are never restored - the torrent stalls indefinitely with peers
-// connected. Re-arming them periodically breaks that cycle regardless of how
-// the priorities were lost.
-func (c *Cache) priorityWatchdog() {
+// Piece priorities are normally updated by I/O-triggered cleanups, but if
+// priorities ever end up cleared while a reader (or warm pause window) needs
+// data, no piece I/O happens; the 5-second ticker re-arms them and cleans up
+// warm priorities once the pause grace window expires.
+func (c *Cache) cacheLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(5 * time.Second)
-		if c.isClosed.Load() {
+		select {
+		case <-c.stopCh:
 			return
-		}
-		if c.torrent == nil {
-			continue
-		}
-		if c.GetUseReaders() > 0 {
-			c.getRemPieces()
+		case <-c.cleanCh:
+			if c.isClosed.Load() {
+				return
+			}
+			c.cleanPieces()
+		case <-ticker.C:
+			if c.isClosed.Load() {
+				return
+			}
+			c.trimIdleDiskFiles(diskFileIdleSeconds)
+			if c.torrent == nil {
+				continue
+			}
+			if c.GetUseReaders() > 0 || c.hasWarmOrExpiredPriority() {
+				c.cleanPieces()
+			}
 		}
 	}
+}
+
+func (c *Cache) triggerClean() {
+	if c == nil || c.isClosed.Load() {
+		return
+	}
+	if c.cleanCh != nil {
+		select {
+		case c.cleanCh <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c *Cache) allocBuffer() []byte {
+	if c == nil || c.pieceLength <= 0 {
+		return nil
+	}
+	if c.bufPool.New != nil {
+		if v := c.bufPool.Get(); v != nil {
+			if buf, ok := v.([]byte); ok && int64(cap(buf)) >= c.pieceLength {
+				buf = buf[:c.pieceLength]
+				clear(buf)
+				return buf
+			}
+		}
+	}
+	return make([]byte, c.pieceLength)
+}
+
+func (c *Cache) freeBuffer(buf []byte) {
+	if c == nil || c.isClosed.Load() || c.pieceLength <= 0 {
+		return
+	}
+	if int64(cap(buf)) >= c.pieceLength && c.bufPool.New != nil {
+		c.bufPool.Put(buf[:c.pieceLength])
+	}
+}
+
+func (c *Cache) SetPreloading(v bool) {
+	if c == nil {
+		return
+	}
+	c.preloading.Store(v)
+}
+
+func (c *Cache) touchActivity(file *torrent.File, offset int64, now int64) {
+	if c == nil || file == nil {
+		return
+	}
+	c.muAct.Lock()
+	c.lastFile = file
+	c.lastOffset = offset
+	c.lastActive = now
+	c.muAct.Unlock()
+}
+
+func (c *Cache) activitySnapshot() (*torrent.File, int64, int64) {
+	c.muAct.Lock()
+	f, off, act := c.lastFile, c.lastOffset, c.lastActive
+	c.muAct.Unlock()
+	return f, off, act
+}
+
+func (c *Cache) pauseWarmWindowSeconds() int64 {
+	if settings.BTsets == nil {
+		return defaultPauseWarmSeconds
+	}
+	if settings.BTsets.PauseTimeout < 0 {
+		return 0
+	}
+	if settings.BTsets.PauseTimeout == 0 {
+		return defaultPauseWarmSeconds
+	}
+	return int64(settings.BTsets.PauseTimeout)
+}
+
+func (c *Cache) hasWarmOrExpiredPriority() bool {
+	warmSec := c.pauseWarmWindowSeconds()
+	c.muAct.Lock()
+	has := c.hadWarmPriority || (warmSec > 0 && c.lastFile != nil && time.Now().Unix()-c.lastActive <= warmSec)
+	c.muAct.Unlock()
+	return has
+}
+
+func (c *Cache) trackOpenDiskPiece(dp *DiskPiece) {
+	if c == nil || dp == nil || dp.piece == nil {
+		return
+	}
+	var evict []*DiskPiece
+	c.muDiskPool.Lock()
+	if c.openDisk == nil {
+		c.openDisk = make(map[int]*DiskPiece)
+	}
+	c.openDisk[dp.piece.Id] = dp
+	if len(c.openDisk) > maxOpenDiskFiles {
+		type candidate struct {
+			id   int
+			dp   *DiskPiece
+			last int64
+		}
+		list := make([]candidate, 0, len(c.openDisk))
+		for id, item := range c.openDisk {
+			if id == dp.piece.Id {
+				continue
+			}
+			list = append(list, candidate{id: id, dp: item, last: item.lastIO.Load()})
+		}
+		sort.Slice(list, func(i, j int) bool {
+			return list[i].last < list[j].last
+		})
+		over := len(c.openDisk) - maxOpenDiskFiles
+		for i := 0; i < len(list) && over > 0; i++ {
+			evict = append(evict, list[i].dp)
+			delete(c.openDisk, list[i].id)
+			over--
+		}
+	}
+	c.muDiskPool.Unlock()
+
+	for _, item := range evict {
+		if !item.closeIdleFile(0, 0) {
+			c.muDiskPool.Lock()
+			if c.openDisk != nil {
+				c.openDisk[item.piece.Id] = item
+			}
+			c.muDiskPool.Unlock()
+		}
+	}
+}
+
+func (c *Cache) untrackDiskPiece(id int) {
+	if c == nil {
+		return
+	}
+	c.muDiskPool.Lock()
+	delete(c.openDisk, id)
+	c.muDiskPool.Unlock()
+}
+
+func (c *Cache) trimIdleDiskFiles(maxIdleSec int64) {
+	if c == nil {
+		return
+	}
+	now := time.Now().Unix()
+	var list []*DiskPiece
+	c.muDiskPool.Lock()
+	for _, item := range c.openDisk {
+		if now-item.lastIO.Load() >= maxIdleSec {
+			list = append(list, item)
+		}
+	}
+	c.muDiskPool.Unlock()
+
+	for _, item := range list {
+		if item.closeIdleFile(maxIdleSec, now) {
+			c.untrackDiskPiece(item.piece.Id)
+		}
+	}
+}
+
+func (c *Cache) closeAllDiskFiles() {
+	if c == nil {
+		return
+	}
+	c.muDiskPool.Lock()
+	list := make([]*DiskPiece, 0, len(c.openDisk))
+	for _, item := range c.openDisk {
+		list = append(list, item)
+	}
+	c.openDisk = make(map[int]*DiskPiece)
+	c.muDiskPool.Unlock()
+
+	for _, item := range list {
+		item.closeFileForce()
+	}
+}
+
+func (c *Cache) openDiskFilesCount() int {
+	c.muDiskPool.Lock()
+	n := len(c.openDisk)
+	c.muDiskPool.Unlock()
+	return n
 }
 
 func (c *Cache) SetTorrent(torr *torrent.Torrent) {
@@ -149,10 +375,19 @@ func (c *Cache) Close() error {
 		log.TLogln("Close cache for:", c.hash)
 	}
 	c.isClosed.Store(true)
+	c.closeOnce.Do(func() {
+		if c.stopCh != nil {
+			close(c.stopCh)
+		}
+	})
 
-	c.storage.removeCache(c.hash)
+	if c.storage != nil {
+		c.storage.removeCache(c.hash)
+	}
 
-	if settings.BTsets.RemoveCacheOnDrop {
+	c.closeAllDiskFiles()
+
+	if settings.BTsets != nil && settings.BTsets.RemoveCacheOnDrop {
 		name := filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString())
 		if name != "" && name != "/" {
 			for _, v := range c.getPieces() {
@@ -172,6 +407,7 @@ func (c *Cache) Close() error {
 	c.pieces = nil
 	c.muPieces.Unlock()
 
+	c.bufPool = sync.Pool{}
 	utils.FreeOSMemGC()
 	return nil
 }
@@ -186,8 +422,10 @@ func (c *Cache) AdjustRA(readahead int64) {
 	if c == nil {
 		return
 	}
-	if settings.BTsets.CacheSize == 0 {
+	if settings.BTsets != nil && settings.BTsets.CacheSize == 0 {
+		c.muCap.Lock()
 		c.capacity = readahead * 3
+		c.muCap.Unlock()
 	}
 	for _, r := range c.readersSnapshot() {
 		r.SetReadahead(readahead)
@@ -201,35 +439,66 @@ func (c *Cache) GetState() *state.CacheState {
 	var fill int64 = 0
 
 	for _, p := range c.getPieces() {
-		if p.Size > 0 {
-			fill += p.Size
+		size, complete, _ := p.snapshot()
+		if size > 0 {
+			fill += size
+			prio := 0
+			if c.torrent != nil {
+				prio = int(c.torrent.PieceState(p.Id).Priority)
+			}
 			piecesState[p.Id] = state.ItemState{
 				Id:        p.Id,
-				Size:      p.Size,
+				Size:      size,
 				Length:    c.pieceLength,
-				Completed: p.Complete,
-				Priority:  int(c.torrent.PieceState(p.Id).Priority),
+				Completed: complete,
+				Priority:  prio,
 			}
 		}
 	}
 
 	readersState := make([]*state.ReaderState, 0)
+	now := time.Now().Unix()
+	activeReaders := 0
 
 	for _, r := range c.readersSnapshot() {
 		rng := r.getPiecesRange()
 		pc := r.getReaderPiece()
+		inUse := r.isInUse()
+		if inUse {
+			activeReaders++
+		}
+		idle := now - r.lastAccessTime()
+		if idle < 0 {
+			idle = 0
+		}
 		readersState = append(readersState, &state.ReaderState{
-			Start:  rng.Start,
-			End:    rng.End,
-			Reader: pc,
+			Start:       rng.Start,
+			End:         rng.End,
+			Reader:      pc,
+			IsUse:       inUse,
+			IdleSeconds: idle,
+			Readahead:   r.Readahead(),
 		})
 	}
 
-	cState.Capacity = c.capacity
+	c.muAct.Lock()
+	lastAct := c.lastActive
+	warmPause := c.hadWarmPriority
+	c.muAct.Unlock()
+
+	var cacheIdle int64
+	if lastAct > 0 && now > lastAct {
+		cacheIdle = now - lastAct
+	}
+
+	cState.Capacity = c.GetCapacity()
 	cState.PiecesLength = c.pieceLength
 	cState.PiecesCount = c.pieceCount
 	cState.Hash = c.hash.HexString()
 	cState.Filled = fill
+	cState.ActiveReaders = activeReaders
+	cState.IdleSeconds = cacheIdle
+	cState.WarmPause = warmPause
 	cState.Pieces = piecesState
 	cState.Readers = readersState
 	return cState
@@ -250,111 +519,276 @@ func (c *Cache) cleanPieces() {
 	defer func() { c.isRemove.Store(false) }()
 
 	remPieces := c.getRemPieces()
-	if c.filled > c.capacity {
-		rems := (c.filled-c.capacity)/c.pieceLength + 1
+	capLimit := c.GetCapacity()
+	if c.filled > capLimit {
+		filled := c.filled
 		for _, p := range remPieces {
+			cost := p.memCost()
 			c.removePiece(p)
-			rems--
-			if rems <= 0 {
-				utils.FreeOSMemGC()
-				return
+			filled -= cost
+			if filled <= capLimit {
+				break
 			}
 		}
+		c.filled = filled
 	}
 }
 
 func (c *Cache) getRemPieces() []*Piece {
 	readers := c.readersSnapshot()
+	now := time.Now().Unix()
+
+	hasRecentlyActiveReader := false
+	for _, r := range readers {
+		if now-r.lastAccessTime() <= 15 {
+			hasRecentlyActiveReader = true
+			break
+		}
+	}
 
 	// Collect read ranges from active readers
-	ranges := make([]Range, 0)
+	ranges := make([]Range, 0, len(readers))
 	for _, r := range readers {
-		r.checkReader()
-		if r.isUse {
+		r.checkReader(hasRecentlyActiveReader)
+		if r.isInUse() {
 			ranges = append(ranges, r.getPiecesRange())
 		}
 	}
 	ranges = mergeRange(ranges)
 
-	piecesRemove := make([]*Piece, 0)
+	protectRanges := ranges
+	if len(protectRanges) == 0 {
+		if lastFile, _, _ := c.activitySnapshot(); lastFile != nil {
+			protectRanges = []Range{{File: lastFile}}
+		}
+	}
+
+	type pieceSortItem struct {
+		piece    *Piece
+		complete bool
+		accessed int64
+	}
+	candidates := make([]pieceSortItem, 0)
 	fill := int64(0)
 
 	// Determine which chunks can be deleted
 	for id, p := range c.getPieces() {
-		if p.Size > 0 {
+		size, complete, accessed := p.snapshot()
+		if size > 0 {
 			fill += p.memCost()
 		}
 		if len(ranges) > 0 {
 			if !inRanges(ranges, id) {
-				if p.Size > 0 && !c.isIdInFileBE(ranges, id) {
-					piecesRemove = append(piecesRemove, p)
+				if size > 0 && !c.isIdInFileBE(protectRanges, id) {
+					candidates = append(candidates, pieceSortItem{p, complete, accessed})
 				}
 			}
 		} else {
-			// When preloading, clear everything except the beginning and end of the file
-			if p.Size > 0 && !c.isIdInFileBE(ranges, id) {
-				piecesRemove = append(piecesRemove, p)
+			// When preloading or temporarily paused without readers, keep the beginning and end of the active file.
+			if size > 0 && !c.isIdInFileBE(protectRanges, id) {
+				candidates = append(candidates, pieceSortItem{p, complete, accessed})
 			}
 		}
 	}
 
-	c.clearPriority()
-	c.setLoadPriority(ranges)
+	c.filled = fill
+	c.reconcilePriorities(ranges, fill)
 
 	// Complete pieces first, oldest first; a piece still downloading goes last. The torrent
 	// client never re-requests chunks it has received, so evicting their bytes makes a
 	// responsive reader that comes back to them read zeros.
-	sort.Slice(piecesRemove, func(i, j int) bool {
-		if piecesRemove[i].Complete != piecesRemove[j].Complete {
-			return piecesRemove[i].Complete
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].complete != candidates[j].complete {
+			return candidates[i].complete
 		}
-		return piecesRemove[i].Accessed < piecesRemove[j].Accessed
+		return candidates[i].accessed < candidates[j].accessed
 	})
 
-	c.filled = fill
+	piecesRemove := make([]*Piece, len(candidates))
+	for i, item := range candidates {
+		piecesRemove[i] = item.piece
+	}
 	return piecesRemove
 }
 
-func (c *Cache) setLoadPriority(ranges []Range) {
-	readers := c.readersSnapshot()
-	pieces := c.getPieces()
-	if len(readers) == 0 || pieces == nil {
+const (
+	prioNone = iota
+	prioNormal
+	prioHigh
+	prioReadahead
+	prioNext
+	prioNow
+)
+
+func setPiecePriorityIfChanged(tp *torrent.Piece, cur torrent.PieceState, want int) {
+	switch want {
+	case prioNow:
+		if cur.Priority != torrent.PiecePriorityNow {
+			tp.SetPriority(torrent.PiecePriorityNow)
+		}
+	case prioNext:
+		if cur.Priority != torrent.PiecePriorityNext {
+			tp.SetPriority(torrent.PiecePriorityNext)
+		}
+	case prioReadahead:
+		if cur.Priority != torrent.PiecePriorityReadahead {
+			tp.SetPriority(torrent.PiecePriorityReadahead)
+		}
+	case prioHigh:
+		if cur.Priority != torrent.PiecePriorityHigh {
+			tp.SetPriority(torrent.PiecePriorityHigh)
+		}
+	case prioNormal:
+		if cur.Priority != torrent.PiecePriorityNormal {
+			tp.SetPriority(torrent.PiecePriorityNormal)
+		}
+	default:
+		if cur.Priority != torrent.PiecePriorityNone {
+			tp.SetPriority(torrent.PiecePriorityNone)
+		}
+	}
+}
+
+func (c *Cache) reconcilePriorities(ranges []Range, fill int64) {
+	if c.torrent == nil || c.preloading.Load() || c.isClosed.Load() {
 		return
 	}
+	pieces := c.getPieces()
+	if pieces == nil || c.pieceLength <= 0 {
+		return
+	}
+
+	readers := c.readersSnapshot()
+	activeReaders := make([]*Reader, 0, len(readers))
+	for _, r := range readers {
+		if r.isInUse() {
+			activeReaders = append(activeReaders, r)
+		}
+	}
+
 	c.muPrio.Lock()
 	defer c.muPrio.Unlock()
-	for _, r := range readers {
-		if !r.isUse {
-			continue
+
+	capLimit := c.GetCapacity()
+	if capLimit <= 0 {
+		capLimit = c.pieceLength * 4
+	}
+	connLimit := 25
+	readAheadPct := 95
+	if settings.BTsets != nil {
+		if settings.BTsets.ConnectionsLimit > 0 {
+			connLimit = settings.BTsets.ConnectionsLimit
 		}
-		if c.isIdInFileBE(ranges, r.getReaderPiece()) {
-			continue
+		if settings.BTsets.ReaderReadAHead > 0 {
+			readAheadPct = settings.BTsets.ReaderReadAHead
 		}
-		readerPos := r.getReaderPiece()
-		readerRAHPos := r.getReaderRAHPiece()
-		end := r.getPiecesRange().End
-		count := settings.BTsets.ConnectionsLimit / len(readers) // max concurrent loading blocks
-		limit := 0
-		for i := readerPos; i < end && limit < count; i++ {
-			if !pieces[i].Complete {
-				if i == readerPos {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNow)
-				} else if i == readerPos+1 {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNext)
-				} else if i > readerPos && i <= readerRAHPos {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityReadahead)
-				} else if i > readerRAHPos && i <= readerRAHPos+5 && c.torrent.PieceState(i).Priority != torrent.PiecePriorityHigh {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityHigh)
-				} else if i > readerRAHPos+5 && c.torrent.PieceState(i).Priority != torrent.PiecePriorityNormal {
-					c.torrent.Piece(i).SetPriority(torrent.PiecePriorityNormal)
+	}
+
+	desired := make(map[int]int)
+
+	if len(activeReaders) > 0 {
+		c.muAct.Lock()
+		c.hadWarmPriority = false
+		c.muAct.Unlock()
+
+		readerBudget := capLimit / int64(len(activeReaders))
+		maxAheadBytes := readerBudget * int64(readAheadPct) / 100
+		if maxAheadBytes < c.pieceLength*2 {
+			maxAheadBytes = c.pieceLength * 2
+		}
+		maxPieces := int(maxAheadBytes / c.pieceLength)
+		if maxPieces < 2 {
+			maxPieces = 2
+		}
+		count := connLimit / len(activeReaders)
+		if count < 2 {
+			count = 2
+		}
+		if count > maxPieces {
+			count = maxPieces
+		}
+
+		for _, r := range activeReaders {
+			readerPos := r.getReaderPiece()
+			readerRAHPos := r.getReaderRAHPiece()
+			end := r.getPiecesRange().End
+			limit := 0
+			for i := readerPos; i <= end && i < len(pieces) && limit < count; i++ {
+				p := pieces[i]
+				if p == nil || p.isComplete() {
+					continue
+				}
+				var prio int
+				switch {
+				case i == readerPos:
+					prio = prioNow
+				case i == readerPos+1:
+					prio = prioNext
+				case i <= readerRAHPos:
+					prio = prioReadahead
+				case i <= readerRAHPos+5:
+					prio = prioHigh
+				default:
+					prio = prioNormal
+				}
+				if prio > desired[i] {
+					desired[i] = prio
 				}
 				limit++
 			}
 		}
+	} else {
+		// When all HTTP readers temporarily closed (e.g. player paused and closed socket),
+		// keep a small warm window ahead of the last playback position if cache has headroom.
+		lastFile, lastOff, lastAct := c.activitySnapshot()
+		now := time.Now().Unix()
+		warmSec := c.pauseWarmWindowSeconds()
+		warm := false
+		if warmSec > 0 && lastFile != nil && now-lastAct <= warmSec && fill < (capLimit*3)/4 {
+			warmBytes := capLimit / 2
+			if warmBytes < c.pieceLength*2 {
+				warmBytes = c.pieceLength * 2
+			}
+			if warmBytes > 16<<20 {
+				warmBytes = 16 << 20
+			}
+			startPiece := int((lastOff + lastFile.Offset()) / c.pieceLength)
+			endOff := lastOff + warmBytes
+			if endOff > lastFile.Length() {
+				endOff = lastFile.Length()
+			}
+			endPiece := int((endOff + lastFile.Offset()) / c.pieceLength)
+			warmCount := 0
+			for i := startPiece; i <= endPiece && i < len(pieces) && warmCount < 4; i++ {
+				p := pieces[i]
+				if p == nil || p.isComplete() {
+					continue
+				}
+				prio := prioReadahead
+				if i == startPiece {
+					prio = prioHigh
+				}
+				if prio > desired[i] {
+					desired[i] = prio
+				}
+				warmCount++
+			}
+			warm = warmCount > 0
+		}
+		c.muAct.Lock()
+		c.hadWarmPriority = warm
+		c.muAct.Unlock()
+	}
+
+	for id := range pieces {
+		setPiecePriorityIfChanged(c.torrent.Piece(id), c.torrent.PieceState(id), desired[id])
 	}
 }
 
 func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {
+	if c.pieceLength <= 0 {
+		return false
+	}
 	// keep 8/16 MB
 	FileRangeNotDelete := int64(c.pieceLength)
 	if FileRangeNotDelete < 8<<20 {
@@ -362,6 +796,9 @@ func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {
 	}
 
 	for _, rng := range ranges {
+		if rng.File == nil {
+			continue
+		}
 		ss := int(rng.File.Offset() / c.pieceLength)
 		se := int((rng.File.Offset() + FileRangeNotDelete) / c.pieceLength)
 
@@ -391,7 +828,7 @@ func (c *Cache) GetUseReaders() int {
 	defer c.muReaders.RUnlock()
 	readers := 0
 	for reader := range c.readers {
-		if reader.isUse {
+		if reader.isInUse() {
 			readers++
 		}
 	}
@@ -413,46 +850,32 @@ func (c *Cache) CloseReader(r *Reader) {
 	r.cache.muReaders.Unlock()
 	// Reader.Close touches anacrolix internals, keep it outside muReaders
 	r.Close()
-	go c.clearPriority()
 }
 
 func (c *Cache) clearPriority() {
 	if c.torrent == nil {
 		return
 	}
-	// This used to sleep for a second before clearing priorities. A reader
-	// created during that window could have its PiecePriorityNow/Next/Readahead
-	// reset to None right after setLoadPriority had assigned them, starving the
-	// player. A mutex provides the same ordering without the race window.
-	c.muPrio.Lock()
-	defer c.muPrio.Unlock()
-	ranges := make([]Range, 0)
-	for _, r := range c.readersSnapshot() {
-		r.checkReader()
-		if r.isUse {
-			ranges = append(ranges, r.getPiecesRange())
-		}
-	}
-	ranges = mergeRange(ranges)
-
-	for id := range c.getPieces() {
-		if len(ranges) > 0 {
-			if !inRanges(ranges, id) {
-				if c.torrent.PieceState(id).Priority != torrent.PiecePriorityNone {
-					c.torrent.Piece(id).SetPriority(torrent.PiecePriorityNone)
-				}
-			}
-		} else {
-			if c.torrent.PieceState(id).Priority != torrent.PiecePriorityNone {
-				c.torrent.Piece(id).SetPriority(torrent.PiecePriorityNone)
-			}
-		}
-	}
+	c.reconcilePriorities(nil, c.filled)
 }
 
 func (c *Cache) GetCapacity() int64 {
 	if c == nil {
 		return 0
 	}
-	return c.capacity
+	c.muCap.RLock()
+	capLimit := c.capacity
+	c.muCap.RUnlock()
+	return capLimit
+}
+
+func (c *Cache) FilledBytes() int64 {
+	if c == nil {
+		return 0
+	}
+	var fill int64
+	for _, p := range c.getPieces() {
+		fill += p.getSize()
+	}
+	return fill
 }

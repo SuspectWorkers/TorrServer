@@ -40,9 +40,17 @@ func (t *Torrent) Preload(index int, size int64) {
 	// and "drop all torrents" leaves Stat as is. Use only this pointer below: it stays valid after Drop.
 	torrent := t.Torrent
 	t.Stat = state.TorrentPreload
+	cache := t.cache
 	t.muTorrent.Unlock()
 
+	if cache != nil {
+		cache.SetPreloading(true)
+	}
+
 	defer func() {
+		if cache != nil {
+			cache.SetPreloading(false)
+		}
 		t.muTorrent.Lock()
 		if t.Stat == state.TorrentPreload {
 			t.Stat = state.TorrentWorking

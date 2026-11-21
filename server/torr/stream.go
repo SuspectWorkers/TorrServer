@@ -97,6 +97,8 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 	}
 	// Ensure reader is always closed
 	defer t.CloseReader(reader)
+	t.hasStreamed.Store(true)
+	t.AddExpiredTime(t.disconnectTimeout())
 	// A read waiting for data must end when the client goes away (players drop the
 	// connection on every seek), otherwise the reader outlives the request
 	reader.SetContext(req.Context())
@@ -134,7 +136,6 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 	}
 
 	// Set response headers
-	resp.Header().Set("Connection", "close")
 	// Set response header for Kodi
 	resp.Header().Set("Server", "TorrServer (Portable SDK for UPnP devices)")
 	// Add timeout header if configured

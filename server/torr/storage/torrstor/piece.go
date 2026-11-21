@@ -1,6 +1,8 @@
 package torrstor
 
 import (
+	"sync"
+
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/storage"
 	"server/settings"
@@ -14,6 +16,8 @@ type Piece struct {
 
 	Complete bool  `json:"complete"`
 	Accessed int64 `json:"accessed"`
+
+	statMu sync.RWMutex
 
 	mPiece *MemPiece  `json:"-"`
 	dPiece *DiskPiece `json:"-"`
@@ -60,22 +64,77 @@ func (p *Piece) memCost() int64 {
 	if p.mPiece != nil {
 		return p.mPiece.allocated()
 	}
-	return p.Size
+	return p.getSize()
+}
+
+func (p *Piece) snapshot() (size int64, complete bool, accessed int64) {
+	p.statMu.RLock()
+	size = p.Size
+	complete = p.Complete
+	accessed = p.Accessed
+	p.statMu.RUnlock()
+	return
+}
+
+func (p *Piece) getSize() int64 {
+	p.statMu.RLock()
+	size := p.Size
+	p.statMu.RUnlock()
+	return size
+}
+
+func (p *Piece) isComplete() bool {
+	p.statMu.RLock()
+	complete := p.Complete
+	p.statMu.RUnlock()
+	return complete
+}
+
+func (p *Piece) addSize(delta int64, maxLen int64, now int64) {
+	p.statMu.Lock()
+	p.Size += delta
+	if p.Size > maxLen {
+		p.Size = maxLen
+	}
+	p.Accessed = now
+	p.statMu.Unlock()
+}
+
+func (p *Piece) touch(now int64) int64 {
+	p.statMu.Lock()
+	p.Accessed = now
+	size := p.Size
+	p.statMu.Unlock()
+	return size
+}
+
+func (p *Piece) resetStats() {
+	p.statMu.Lock()
+	p.Size = 0
+	p.Complete = false
+	p.statMu.Unlock()
 }
 
 func (p *Piece) MarkComplete() error {
+	p.statMu.Lock()
 	p.Complete = true
+	p.statMu.Unlock()
 	return nil
 }
 
 func (p *Piece) MarkNotComplete() error {
+	p.statMu.Lock()
 	p.Complete = false
+	p.statMu.Unlock()
 	return nil
 }
 
 func (p *Piece) Completion() storage.Completion {
+	p.statMu.RLock()
+	complete := p.Complete
+	p.statMu.RUnlock()
 	return storage.Completion{
-		Complete: p.Complete,
+		Complete: complete,
 		Ok:       true,
 	}
 }
@@ -86,8 +145,8 @@ func (p *Piece) Release() {
 	} else {
 		p.dPiece.Release()
 	}
-	// if !p.cache.isClosed {
-	p.cache.torrent.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
-	p.cache.torrent.Piece(p.Id).UpdateCompletion()
-	//}
+	if p.cache != nil && p.cache.torrent != nil {
+		p.cache.torrent.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
+		p.cache.torrent.Piece(p.Id).UpdateCompletion()
+	}
 }

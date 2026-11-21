@@ -50,6 +50,7 @@ type BTSets struct {
 	TrackersListURL          string // optional custom remote trackers list URL; empty = use built-in mirrors; tried first, then mirrors
 	DefaultTrackers          string // newline-separated announce URLs used as local/fallback list
 	TorrentDisconnectTimeout int    // in seconds
+	PauseTimeout             int    // in seconds, grace period for paused streams (def 180, -1 to disable)
 	EnableDebug              bool   // debug logs
 
 	// DLNA
@@ -152,6 +153,9 @@ func SetBTSets(sets *BTSets) {
 	if sets.TorrentDisconnectTimeout == 0 {
 		sets.TorrentDisconnectTimeout = 30
 	}
+	if sets.PauseTimeout == 0 {
+		sets.PauseTimeout = 180
+	}
 
 	if sets.ReaderReadAHead < 5 {
 		sets.ReaderReadAHead = 5
@@ -206,6 +210,7 @@ func SetDefaultConfig() {
 	sets.TrackersListURL = ""
 	sets.DefaultTrackers = DefaultTrackersText
 	sets.TorrentDisconnectTimeout = 30
+	sets.PauseTimeout = 180
 	sets.ReaderReadAHead = 95 // 95%
 	sets.ResponsiveMode = true
 	sets.ShowFSActiveTorr = true
@@ -239,6 +244,9 @@ func loadBTSets() {
 		if err == nil {
 			if BTsets.ReaderReadAHead < 5 {
 				BTsets.ReaderReadAHead = 5
+			}
+			if BTsets.PauseTimeout == 0 {
+				BTsets.PauseTimeout = 180
 			}
 			// Set default TMDB settings if missing (for existing configs)
 			if BTsets.TMDBSettings.APIURL == "" {

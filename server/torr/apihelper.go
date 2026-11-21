@@ -105,13 +105,9 @@ func GetTorrent(hashHex string) *Torrent {
 	if !ok {
 		return nil
 	}
-	timeout := time.Second * time.Duration(sets.BTsets.TorrentDisconnectTimeout)
-	if timeout > time.Minute {
-		timeout = time.Minute
-	}
 	tor := bts.GetTorrent(hash)
 	if tor != nil {
-		tor.AddExpiredTime(timeout)
+		tor.AddExpiredTime(tor.disconnectTimeout())
 		return tor
 	}
 

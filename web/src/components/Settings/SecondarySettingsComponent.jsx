@@ -51,6 +51,7 @@ export default function SecondarySettingsComponent({ settings, inputForm, update
     TrackersListURL,
     DefaultTrackers,
     TorrentDisconnectTimeout,
+    PauseTimeout,
     EnableDebug,
     EnableDLNA,
     EnableBonjour,
@@ -224,6 +225,21 @@ export default function SecondarySettingsComponent({ settings, inputForm, update
           endAdornment: <InputAdornment position='end'>{t('Seconds')}</InputAdornment>,
         }}
         value={TorrentDisconnectTimeout}
+        type='number'
+        variant='outlined'
+        fullWidth
+      />
+      <br />
+      <TextField
+        onChange={inputForm}
+        margin='normal'
+        id='PauseTimeout'
+        label={t('SettingsDialog.PauseTimeout')}
+        helperText={t('SettingsDialog.PauseTimeoutHint')}
+        InputProps={{
+          endAdornment: <InputAdornment position='end'>{t('Seconds')}</InputAdornment>,
+        }}
+        value={PauseTimeout ?? 180}
         type='number'
         variant='outlined'
         fullWidth

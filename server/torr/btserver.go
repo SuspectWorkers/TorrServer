@@ -115,6 +115,7 @@ func (bt *BTServer) configure() {
 	bt.config.NoDHT = settings.BTsets.DisableDHT
 	bt.config.DisablePEX = settings.BTsets.DisablePEX
 	bt.config.NoUpload = settings.BTsets.DisableUpload
+	bt.config.Seed = !settings.BTsets.DisableUpload
 	bt.config.IPBlocklist = blocklist
 	bt.config.Bep20 = peerID
 	bt.config.PeerID = utils.PeerIDRandom(peerID)
@@ -122,7 +123,14 @@ func (bt *BTServer) configure() {
 	bt.config.HTTPUserAgent = userAgent
 	bt.config.ExtendedHandshakeClientVersion = cliVers
 	bt.config.EstablishedConnsPerTorrent = settings.BTsets.ConnectionsLimit
-	bt.config.TotalHalfOpenConns = 500
+	halfOpen := settings.BTsets.ConnectionsLimit * 4
+	if halfOpen < 100 {
+		halfOpen = 100
+	}
+	if halfOpen > 250 {
+		halfOpen = 250
+	}
+	bt.config.TotalHalfOpenConns = halfOpen
 	// Encryption/Obfuscation
 	bt.config.EncryptionPolicy = torrent.EncryptionPolicy{ //	OE
 		ForceEncryption: settings.BTsets.ForceEncrypt, //	OE
@@ -135,7 +143,6 @@ func (bt *BTServer) configure() {
 		bt.config.DownloadRateLimiter = utils.Limit(settings.BTsets.DownloadRateLimit * 1024)
 	}
 	if settings.BTsets.UploadRateLimit > 0 {
-		bt.config.Seed = true
 		bt.config.UploadRateLimiter = utils.Limit(settings.BTsets.UploadRateLimit * 1024)
 	}
 	if settings.TorAddr != "" {
