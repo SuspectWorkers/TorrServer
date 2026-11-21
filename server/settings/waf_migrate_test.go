@@ -138,6 +138,9 @@ func TestMigrateWAFListsReadOnly(t *testing.T) {
 }
 
 func TestMigrateWAFListsWriteFailureKeepsFiles(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("chmod 0555 does not prevent writes as root")
+	}
 	withWAFSettingsPath(t)
 	wip := filepath.Join(Path, legacyWIPFile)
 	if err := os.WriteFile(wip, []byte("127.0.0.1\n"), 0o600); err != nil {

@@ -128,6 +128,10 @@ func initTestGlobals(t *testing.T) {
 func TestNewTorrentDoesNotDeadlock(t *testing.T) {
 	initTestGlobals(t)
 
+	prevDHT := settings.BTsets.DisableDHT
+	settings.BTsets.DisableDHT = true
+	t.Cleanup(func() { settings.BTsets.DisableDHT = prevDHT })
+
 	bt := NewBTS()
 	InitApiHelper(bt)
 	if err := bt.Connect(); err != nil {
