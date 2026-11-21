@@ -69,7 +69,7 @@ jobs:
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "Version: ${VERSION}"
 
-            - name: Extract metadata
+        - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
