@@ -1,43 +1,34 @@
+<h1 align="center">TorrServerFORK</h1>
+
 <p align="center" style="text-align: center">
   <img src="https://github.com/YouROK/TorrServer/assets/144587546/53f7175a-cda4-4a06-86b6-2ac07582dcf1" width="33%"><br/>
 </p>
 
 <p align="center">
-  Simple and powerful tool for streaming torrents.
+  Independent torrent streaming server project based on <a href="https://github.com/YouROK/TorrServer">YouROK/TorrServer</a>, focused on playback stability, smart pause/peer retention, predictable caching, and diagnostics.
   <br/>
   <br/>
-  <a href="https://github.com/YouROK/TorrServer/blob/master/LICENSE">
-    <img alt="GitHub" src="https://img.shields.io/github/license/YouROK/TorrServer"/>
+  <a href="https://github.com/SuspectWorkers/TorrServer/blob/master/LICENSE">
+    <img alt="GitHub" src="https://img.shields.io/github/license/SuspectWorkers/TorrServer"/>
   </a>
-  <a href="https://goreportcard.com/report/github.com/YouROK/TorrServer">
-    <img src="https://goreportcard.com/badge/github.com/YouROK/TorrServer" />
+  <a href="https://github.com/SuspectWorkers/TorrServer/issues">
+    <img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat" alt="Contributions" />
   </a>
-  <a href="https://pkg.go.dev/github.com/YouROK/TorrServer">
-    <img src="https://pkg.go.dev/badge/github.com/YouROK/TorrServer.svg" alt="Go Reference"/>
+  <a href="https://github.com/SuspectWorkers/TorrServer/actions/workflows/docker_image.yml" rel="nofollow">
+    <img src="https://img.shields.io/github/actions/workflow/status/SuspectWorkers/TorrServer/docker_image.yml?logo=Github" alt="Docker Build" />
   </a>
-  <a href="https://github.com/YouROK/TorrServer/issues">
-    <img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat" alt="CodeFactor" />
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/actions/workflows/docker_image.yml" rel="nofollow">
-    <img src="https://img.shields.io/github/actions/workflow/status/YouROK/TorrServer/docker_image.yml?logo=Github" alt="Build" />
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/releases" rel="nofollow">
-    <img alt="GitHub release (latest SemVer)" src="https://img.shields.io/github/v/release/YouROK/TorrServer?label=version"/>
-  </a>
-  <a href="https://github.com/YouROK/TorrServer/tags" rel="nofollow">
-    <img alt="GitHub tag (latest SemVer pre-release)" src="https://img.shields.io/github/v/tag/YouROK/TorrServer?include_prereleases&label=pre-release"/>
+  <a href="https://github.com/SuspectWorkers/TorrServer/actions/workflows/ci_test.yml" rel="nofollow">
+    <img src="https://img.shields.io/github/actions/workflow/status/SuspectWorkers/TorrServer/ci_test.yml?logo=Github&label=tests" alt="Tests" />
   </a>
 </p>
 
 ## Introduction
 
-TorrServer is a program that allows users to view torrents online without the need for preliminary file downloading.
-The core functionality of TorrServer includes caching torrents and subsequent data transfer via the HTTP protocol,
-allowing the cache size to be adjusted according to the system parameters and the user's internet connection speed.
+**TorrServerFORK** is an independent project evolved from [YouROK/TorrServer](https://github.com/YouROK/TorrServer). It selectively tracks and integrates upstream fixes while developing its own engine, caching, logging, and Web UI improvements for reliable online movie streaming without preliminary downloading.
 
-## Изменения форка (ветка `dev`)
+## Что улучшено в TorrServerFORK
 
-Цель форка — устранить проблемы при просмотре фильмов с паузами (от 1 минуты и дольше), падение количества пиров/сидов через 10–15 секунд простоя и избыточное/дёрганое кэширование.
+Основная цель проекта — стабильный просмотр тяжёлых раздач (включая 4K HDR Remux) без отвала пиров и сидов при паузах (от 1 минуты и дольше), без избыточного/дёрганого кэширования и с удобной диагностикой.
 
 ### Что изменено, что стало лучше и почему
 
