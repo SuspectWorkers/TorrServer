@@ -129,6 +129,12 @@ func TestStreamBufferMultipartAndHead(t *testing.T) {
 			}
 			continue
 		}
+		if a.Code == http.StatusOK {
+			if !bytes.Equal(a.Body.Bytes(), b.Body.Bytes()) {
+				t.Fatal("full body bytes differ")
+			}
+			continue
+		}
 		decode := func(resp *httptest.ResponseRecorder) [][]byte {
 			_, params, err := mime.ParseMediaType(resp.Header().Get("Content-Type"))
 			if err != nil {

@@ -2,7 +2,7 @@ name: Go Tests
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, dev]
   pull_request:
 
 jobs:
@@ -20,4 +20,6 @@ jobs:
 
       - name: Run unit and race tests
         working-directory: server
-        run: go test -tags=nosqlite -race ./...
+        env:
+          GODEBUG: httpservecontentmaxranges=200
+        run: go test -tags=nosqlite -ldflags="-checklinkname=0" -race ./...
