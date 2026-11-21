@@ -145,8 +145,8 @@ func (p *Piece) Release() {
 	} else {
 		p.dPiece.Release()
 	}
-	if p.cache != nil && p.cache.torrent != nil {
-		p.cache.torrent.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
-		p.cache.torrent.Piece(p.Id).UpdateCompletion()
+	if tor := p.cache.getTorrent(); tor != nil {
+		tor.Piece(p.Id).SetPriority(torrent.PiecePriorityNone)
+		tor.Piece(p.Id).UpdateCompletion()
 	}
 }

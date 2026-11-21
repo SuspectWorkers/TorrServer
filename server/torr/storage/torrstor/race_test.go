@@ -89,5 +89,8 @@ func TestCachePiecesConcurrentStateClose(t *testing.T) {
 			cache.Close()
 		}()
 		wg.Wait()
+		if cache.loopDone != nil {
+			<-cache.loopDone
+		}
 	}
 }

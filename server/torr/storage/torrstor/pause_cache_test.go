@@ -18,11 +18,11 @@ import (
 func TestMemPieceBufferPoolClearsAndReuses(t *testing.T) {
 	c := NewCache(4<<10, nil)
 	c.pieceLength = 1 << 10
-	c.bufPool = sync.Pool{
+	c.bufPool.Store(&sync.Pool{
 		New: func() any {
 			return make([]byte, c.pieceLength)
 		},
-	}
+	})
 
 	p0 := &Piece{Id: 0, cache: c}
 	p0.mPiece = NewMemPiece(p0)
@@ -118,7 +118,6 @@ func openTestTorrentForCache(t *testing.T, cacheCap int64, pieceLen int64, total
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(cl.Close)
 
 	numPieces := int((totalLen + pieceLen - 1) / pieceLen)
 	info := metainfo.Info{
@@ -129,19 +128,34 @@ func openTestTorrentForCache(t *testing.T, cacheCap int64, pieceLen int64, total
 	}
 	infoBytes, err := bencode.Marshal(info)
 	if err != nil {
+		cl.Close()
 		t.Fatal(err)
 	}
 	tor, err := cl.AddTorrent(&metainfo.MetaInfo{InfoBytes: infoBytes})
 	if err != nil {
+		cl.Close()
 		t.Fatal(err)
 	}
 	<-tor.GotInfo()
 	c := stor.GetCache(tor.InfoHash())
 	if c == nil {
+		cl.Close()
 		t.Fatal("missing cache")
 	}
 	c.SetTorrent(tor)
+	t.Cleanup(func() {
+		cl.Close()
+		if c.loopDone != nil {
+			<-c.loopDone
+		}
+	})
 	return cl, tor, c
+}
+
+func syncClean(c *Cache) {
+	c.muRemove.Lock()
+	defer c.muRemove.Unlock()
+	c.getRemPieces()
 }
 
 func TestReconcilePrioritiesStartOfFileAndBoundedByCacheBudget(t *testing.T) {
@@ -162,7 +176,7 @@ func TestReconcilePrioritiesStartOfFileAndBoundedByCacheBudget(t *testing.T) {
 	defer c.CloseReader(r)
 	r.SetReadahead(32 << 10)
 
-	c.cleanPieces()
+	syncClean(c)
 
 	if got := tor.PieceState(0).Priority; got != torrent.PiecePriorityNow {
 		t.Fatalf("piece 0 priority = %v, want PiecePriorityNow", got)
@@ -199,7 +213,7 @@ func TestReconcilePrioritiesPauseWarmWindowAndExpiry(t *testing.T) {
 	c.touchActivity(tor.Files()[0], 64<<10, time.Now().Unix())
 	c.CloseReader(r)
 
-	c.cleanPieces()
+	syncClean(c)
 
 	warmSet := 0
 	for i := 4; i < 10; i++ {
@@ -213,7 +227,7 @@ func TestReconcilePrioritiesPauseWarmWindowAndExpiry(t *testing.T) {
 
 	// Expire activity past defaultPauseWarmSeconds -> priorities must clear cleanly.
 	c.touchActivity(tor.Files()[0], 64<<10, time.Now().Unix()-defaultPauseWarmSeconds-10)
-	c.cleanPieces()
+	syncClean(c)
 
 	for i := 0; i < c.pieceCount; i++ {
 		if p := tor.PieceState(i).Priority; p != torrent.PiecePriorityNone {
@@ -309,7 +323,7 @@ func TestCacheGetStateDiagnostics(t *testing.T) {
 
 	c.touchActivity(tor.Files()[0], 16<<10, time.Now().Unix())
 	c.CloseReader(r)
-	c.cleanPieces()
+	syncClean(c)
 	st = c.GetState()
 	if st.ActiveReaders != 0 || !st.WarmPause {
 		t.Fatalf("expected ActiveReaders=0 and WarmPause=true during pause grace, got ActiveReaders=%d WarmPause=%v", st.ActiveReaders, st.WarmPause)

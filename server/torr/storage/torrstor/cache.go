@@ -55,11 +55,12 @@ type Cache struct {
 	// muPrio serializes priority updates so concurrent callers cannot wipe
 	// freshly assigned piece priorities.
 	muPrio  sync.Mutex
-	torrent *torrent.Torrent
+	torrent atomic.Pointer[torrent.Torrent]
 
-	bufPool   sync.Pool
+	bufPool   atomic.Pointer[sync.Pool]
 	cleanCh   chan struct{}
 	stopCh    chan struct{}
+	loopDone  chan struct{}
 	closeOnce sync.Once
 
 	muAct           sync.Mutex
@@ -98,13 +99,14 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	c.hash = hash
 
 	pieceLen := info.PieceLength
-	c.bufPool = sync.Pool{
+	c.bufPool.Store(&sync.Pool{
 		New: func() any {
 			return make([]byte, pieceLen)
 		},
-	}
+	})
 	c.cleanCh = make(chan struct{}, 1)
 	c.stopCh = make(chan struct{})
+	c.loopDone = make(chan struct{})
 
 	if settings.BTsets.UseDisk {
 		name := filepath.Join(settings.BTsets.TorrentsSavePath, hash.HexString())
@@ -128,6 +130,7 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 // data, no piece I/O happens; the 5-second ticker re-arms them and cleans up
 // warm priorities once the pause grace window expires.
 func (c *Cache) cacheLoop() {
+	defer close(c.loopDone)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -145,7 +148,7 @@ func (c *Cache) cacheLoop() {
 				return
 			}
 			c.trimIdleDiskFiles(diskFileIdleSeconds)
-			if c.torrent == nil {
+			if c.getTorrent() == nil {
 				continue
 			}
 			if c.GetUseReaders() > 0 || c.hasWarmOrExpiredPriority() {
@@ -171,8 +174,8 @@ func (c *Cache) allocBuffer() []byte {
 	if c == nil || c.pieceLength <= 0 {
 		return nil
 	}
-	if c.bufPool.New != nil {
-		if v := c.bufPool.Get(); v != nil {
+	if pool := c.bufPool.Load(); pool != nil {
+		if v := pool.Get(); v != nil {
 			if buf, ok := v.([]byte); ok && int64(cap(buf)) >= c.pieceLength {
 				buf = buf[:c.pieceLength]
 				clear(buf)
@@ -187,8 +190,8 @@ func (c *Cache) freeBuffer(buf []byte) {
 	if c == nil || c.isClosed.Load() || c.pieceLength <= 0 {
 		return
 	}
-	if int64(cap(buf)) >= c.pieceLength && c.bufPool.New != nil {
-		c.bufPool.Put(buf[:c.pieceLength])
+	if pool := c.bufPool.Load(); pool != nil && int64(cap(buf)) >= c.pieceLength {
+		pool.Put(buf[:c.pieceLength])
 	}
 }
 
@@ -342,7 +345,14 @@ func (c *Cache) SetTorrent(torr *torrent.Torrent) {
 	if c == nil {
 		return
 	}
-	c.torrent = torr
+	c.torrent.Store(torr)
+}
+
+func (c *Cache) getTorrent() *torrent.Torrent {
+	if c == nil {
+		return nil
+	}
+	return c.torrent.Load()
 }
 
 func (c *Cache) getPieces() map[int]*Piece {
@@ -369,8 +379,8 @@ func (c *Cache) Piece(m metainfo.Piece) storage.PieceImpl {
 }
 
 func (c *Cache) Close() error {
-	if c.torrent != nil {
-		log.TLogln("Close cache for:", c.torrent.Name(), c.hash)
+	if tor := c.getTorrent(); tor != nil {
+		log.TLogln("Close cache for:", tor.Name(), c.hash)
 	} else {
 		log.TLogln("Close cache for:", c.hash)
 	}
@@ -407,7 +417,7 @@ func (c *Cache) Close() error {
 	c.pieces = nil
 	c.muPieces.Unlock()
 
-	c.bufPool = sync.Pool{}
+	c.bufPool.Store(nil)
 	utils.FreeOSMemGC()
 	return nil
 }
@@ -438,13 +448,14 @@ func (c *Cache) GetState() *state.CacheState {
 	piecesState := make(map[int]state.ItemState, 0)
 	var fill int64 = 0
 
+	tor := c.getTorrent()
 	for _, p := range c.getPieces() {
 		size, complete, _ := p.snapshot()
 		if size > 0 {
 			fill += size
 			prio := 0
-			if c.torrent != nil {
-				prio = int(c.torrent.PieceState(p.Id).Priority)
+			if tor != nil {
+				prio = int(tor.PieceState(p.Id).Priority)
 			}
 			piecesState[p.Id] = state.ItemState{
 				Id:        p.Id,
@@ -650,7 +661,8 @@ func setPiecePriorityIfChanged(tp *torrent.Piece, cur torrent.PieceState, want i
 }
 
 func (c *Cache) reconcilePriorities(ranges []Range, fill int64) {
-	if c.torrent == nil || c.preloading.Load() || c.isClosed.Load() {
+	tor := c.getTorrent()
+	if tor == nil || c.preloading.Load() || c.isClosed.Load() {
 		return
 	}
 	pieces := c.getPieces()
@@ -781,7 +793,7 @@ func (c *Cache) reconcilePriorities(ranges []Range, fill int64) {
 	}
 
 	for id := range pieces {
-		setPiecePriorityIfChanged(c.torrent.Piece(id), c.torrent.PieceState(id), desired[id])
+		setPiecePriorityIfChanged(tor.Piece(id), tor.PieceState(id), desired[id])
 	}
 }
 
@@ -853,10 +865,10 @@ func (c *Cache) CloseReader(r *Reader) {
 }
 
 func (c *Cache) clearPriority() {
-	if c.torrent == nil {
+	if c.getTorrent() == nil {
 		return
 	}
-	c.reconcilePriorities(nil, c.filled)
+	c.reconcilePriorities(nil, c.FilledBytes())
 }
 
 func (c *Cache) GetCapacity() int64 {
