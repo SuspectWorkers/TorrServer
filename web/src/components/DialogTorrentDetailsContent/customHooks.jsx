@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { cacheHost, settingsHost } from 'utils/Hosts'
 import axios from 'axios'
+
+import { cacheHost, settingsHost } from 'utils/Hosts'
 
 export const useUpdateCache = hash => {
   const [cache, setCache] = useState({})
@@ -16,17 +17,25 @@ export const useUpdateCache = hash => {
   )
 
   useEffect(() => {
-    if (hash) {
-      timerID.current = setInterval(() => {
-        const updateCache = newCache => componentIsMounted.current && setCache(newCache)
+    if (!hash) {
+      clearInterval(timerID.current)
+      return undefined
+    }
 
-        axios
-          .post(cacheHost(), { action: 'get', hash })
-          .then(({ data }) => updateCache(data))
-          // empty cache if error
-          .catch(() => updateCache({}))
-      }, 100)
-    } else clearInterval(timerID.current)
+    const fetchCache = () => {
+      if (typeof document !== 'undefined' && document.hidden) return
+      axios
+        .post(cacheHost(), { action: 'get', hash })
+        .then(({ data }) => {
+          if (componentIsMounted.current) setCache(data)
+        })
+        .catch(() => {
+          if (componentIsMounted.current) setCache({})
+        })
+    }
+
+    fetchCache()
+    timerID.current = setInterval(fetchCache, 750)
 
     return () => clearInterval(timerID.current)
   }, [hash])
@@ -38,7 +47,7 @@ export const useCreateCacheMap = cache => {
   const [cacheMap, setCacheMap] = useState([])
 
   useEffect(() => {
-    const { PiecesCount, Pieces, Readers } = cache
+    const { PiecesCount = 0, Pieces = {}, Readers = [] } = cache || {}
 
     const map = []
 
@@ -60,11 +69,11 @@ export const useCreateCacheMap = cache => {
   return cacheMap
 }
 
-export const useGetSettings = cache => {
+export const useGetSettings = () => {
   const [settings, setSettings] = useState()
   useEffect(() => {
     axios.post(settingsHost(), { action: 'get' }).then(({ data }) => setSettings(data))
-  }, [cache])
+  }, [])
 
   return settings
 }

@@ -33,6 +33,7 @@ const TorrentCache = ({ cache, isMini, isSnakeDebugMode }) => {
     pieceSize,
     gapBetweenPieces,
     backgroundColor,
+    progressColor,
     borderColor,
     cacheMaxHeight,
     completeColor,
@@ -156,6 +157,68 @@ const TorrentCache = ({ cache, isMini, isSnakeDebugMode }) => {
           </SnakeWrapper>
 
           {isMini && height >= cacheMaxHeight && <ScrollNotification>{t('ScrollDown')}</ScrollNotification>}
+
+          {!isMini && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 14,
+                marginTop: 12,
+                fontSize: 12,
+                opacity: 0.85,
+              }}
+            >
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    width: 12,
+                    height: 12,
+                    background: completeColor,
+                    border: `1px solid ${completeColor}`,
+                    display: 'inline-block',
+                  }}
+                />
+                {t('CacheLegend.Complete')}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    width: 12,
+                    height: 12,
+                    background: progressColor,
+                    border: `1px solid ${completeColor}`,
+                    display: 'inline-block',
+                  }}
+                />
+                {t('CacheLegend.Partial')}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    width: 12,
+                    height: 12,
+                    background: backgroundColor,
+                    border: `2px solid ${rangeColor}`,
+                    display: 'inline-block',
+                  }}
+                />
+                {t('CacheLegend.Range')}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    width: 12,
+                    height: 12,
+                    background: backgroundColor,
+                    border: `2px solid ${readerColor}`,
+                    display: 'inline-block',
+                  }}
+                />
+                {t('CacheLegend.Reader')}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </Measure>
@@ -164,5 +227,8 @@ const TorrentCache = ({ cache, isMini, isSnakeDebugMode }) => {
 
 export default memo(
   TorrentCache,
-  (prev, next) => isEqual(prev.cache.Pieces, next.cache.Pieces) && isEqual(prev.cache.Readers, next.cache.Readers),
+  (prev, next) =>
+    prev.isSnakeDebugMode === next.isSnakeDebugMode &&
+    isEqual(prev.cache.Pieces, next.cache.Pieces) &&
+    isEqual(prev.cache.Readers, next.cache.Readers),
 )

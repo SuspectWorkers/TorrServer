@@ -274,6 +274,9 @@ func (bt *BTServer) configureProxy() error {
 }
 
 func (bt *BTServer) GetTorrent(hash torrent.InfoHash) *Torrent {
+	if bt == nil {
+		return nil
+	}
 	bt.mu.RLock()
 	torr := bt.torrents[hash]
 	bt.mu.RUnlock()
@@ -282,6 +285,9 @@ func (bt *BTServer) GetTorrent(hash torrent.InfoHash) *Torrent {
 
 func (bt *BTServer) ListTorrents() map[metainfo.Hash]*Torrent {
 	list := make(map[metainfo.Hash]*Torrent)
+	if bt == nil {
+		return list
+	}
 	bt.mu.RLock()
 	maps.Copy(list, bt.torrents)
 	bt.mu.RUnlock()

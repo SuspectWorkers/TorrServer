@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { USBIcon, RAMIcon } from 'icons'
-import { FormControlLabel, Switch } from '@material-ui/core'
+import { Button, FormControlLabel, Switch } from '@material-ui/core'
 import TextField from '@material-ui/core/TextField'
 
 import {
@@ -44,9 +44,74 @@ export default function PrimarySettingsComponent({
   const { UseDisk, TorrentsSavePath, RemoveCacheOnDrop } = settings || {}
   const preloadCacheSize = Math.round((cacheSize / 100) * preloadCachePercentage)
 
+  const applyProfile = profile => {
+    setCacheSize(profile.CacheSize)
+    setCachePercentage(profile.ReaderReadAHead)
+    setPreloadCachePercentage(profile.PreloadCache)
+    updateSettings({
+      CacheSize: profile.CacheSize,
+      ReaderReadAHead: profile.ReaderReadAHead,
+      PreloadCache: profile.PreloadCache,
+      ConnectionsLimit: profile.ConnectionsLimit,
+      PauseTimeout: profile.PauseTimeout,
+    })
+  }
+
   return (
     <MainSettingsContent>
       <div>
+        <SettingSectionLabel>{t('SettingsDialog.Profiles.Title')}</SettingSectionLabel>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
+          <Button
+            size='small'
+            variant='outlined'
+            color='secondary'
+            onClick={() =>
+              applyProfile({
+                CacheSize: 64,
+                ReaderReadAHead: 95,
+                PreloadCache: 50,
+                ConnectionsLimit: 25,
+                PauseTimeout: 180,
+              })
+            }
+          >
+            {t('SettingsDialog.Profiles.Standard')}
+          </Button>
+          <Button
+            size='small'
+            variant='outlined'
+            color='secondary'
+            onClick={() =>
+              applyProfile({
+                CacheSize: 256,
+                ReaderReadAHead: 95,
+                PreloadCache: 35,
+                ConnectionsLimit: 35,
+                PauseTimeout: 300,
+              })
+            }
+          >
+            {t('SettingsDialog.Profiles.Remux4K')}
+          </Button>
+          <Button
+            size='small'
+            variant='outlined'
+            color='secondary'
+            onClick={() =>
+              applyProfile({
+                CacheSize: 64,
+                ReaderReadAHead: 90,
+                PreloadCache: 25,
+                ConnectionsLimit: 20,
+                PauseTimeout: 300,
+              })
+            }
+          >
+            {t('SettingsDialog.Profiles.SmartTV')}
+          </Button>
+        </div>
+
         <SettingSectionLabel>{t('SettingsDialog.CacheSettings')}</SettingSectionLabel>
 
         <PreloadCachePercentage

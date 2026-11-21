@@ -9,6 +9,7 @@ import AddDialogButton from 'components/Add'
 import SettingsDialog from 'components/Settings'
 import RemoveAll from 'components/RemoveAll'
 import AboutDialog from 'components/About'
+import LogsDialog from 'components/Logs'
 import CloseServer from 'components/CloseServer'
 import SearchDialogButton from 'components/Search'
 import { memo } from 'react'
@@ -63,6 +64,8 @@ const Sidebar = ({ isDrawerOpen, setIsDonationDialogOpen, isOffline, isLoading, 
 
       <List>
         <SettingsDialog isOffline={isOffline} isLoading={isLoading} />
+
+        <LogsDialog isOffline={isOffline} isLoading={isLoading} />
 
         <AboutDialog />
 

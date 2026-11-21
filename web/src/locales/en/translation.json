@@ -1,6 +1,7 @@
 {
   "Torrents": "Torrents",
   "About": "About",
+  "ActiveReaders": "Active streams",
   "Actions": "Actions",
   "Add": "Add",
   "AddDialog": {
@@ -31,6 +32,12 @@
   "Buffer": "Preload Buffer / Cache",
   "BufferNote": "Set Preload Cache Before Play > 32 MB in settings to change preload size",
   "Cache": "Cache",
+  "CacheLegend": {
+    "Complete": "Completed",
+    "Partial": "Partial",
+    "Range": "Buffer window",
+    "Reader": "Reader position"
+  },
   "Cancel": "Cancel",
   "Category": "Category",
   "Clear": "Clear",
@@ -177,6 +184,17 @@
   "Kilobytes": "Kilobytes",
   "LatestFilePlayed": "Latest file played:",
   "Links": "Links",
+  "LogsDialog": {
+    "DownloadFailed": "Failed to download debug report",
+    "DownloadReport": "Download report (.txt)",
+    "Empty": "No log entries yet",
+    "Hint": "Includes current settings, active torrents/cache summary, and recent size-bounded server logs (no secrets).",
+    "LoadFailed": "Failed to load logs",
+    "Loading": "Loading logs...",
+    "MenuTitle": "Logs & Debug",
+    "Refresh": "Refresh",
+    "Title": "Server Logs & Diagnostics"
+  },
   "MB": "MB",
   "Mbps": "Mbps",
   "Movies": "Movies",
@@ -191,6 +209,7 @@
   "OpenLink": "Open link",
   "Other": "Other",
   "Pause": "Pause",
+  "PauseIdle": "Paused",
   "Peers": "Peers·Seeds",
   "PiecesCount": "Pieces count",
   "PiecesLength": "Pieces length",
@@ -222,6 +241,8 @@
   "Rewind-10-Sec": "Rewind 10 Sec",
   "Rutor": "RuTor",
   "Save": "Save",
+  "SecondsShort": "s",
+  "WarmPauseActive": "warm cache active",
   "ScrollDown": "scroll down",
   "Search": "Search",
   "Season": "Season",
@@ -276,6 +297,12 @@
     "PeersListenPortHint": "1024 - 65535, 0 - random",
     "PreloadCache": "Preload Cache Before Play",
     "ProMode": "PRO mode",
+    "Profiles": {
+      "Remux4K": "4K Remux (256 MB)",
+      "SmartTV": "Smart TV / Pause+ (64 MB)",
+      "Standard": "Standard (64 MB)",
+      "Title": "Quick profiles"
+    },
     "RAM": "RAM",
     "ReaderReadAHead": "Readahead Cache (5-100%, rec. 95%)",
     "RemoveCacheOnDrop": "Remove Cache from Disk on Drop Torrent",

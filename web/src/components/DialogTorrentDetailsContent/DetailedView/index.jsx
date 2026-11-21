@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next'
-import { Checkbox, FormControlLabel } from '@material-ui/core'
+import { Checkbox, Chip, FormControlLabel } from '@material-ui/core'
 import { useState } from 'react'
 
 import { SectionTitle, WidgetWrapper } from '../style'
@@ -29,6 +29,9 @@ export default function DetailedView({
   const [isSnakeDebugMode, setIsSnakeDebugMode] = useState(
     JSON.parse(localStorage.getItem('isSnakeDebugMode')) || false,
   )
+  const activeReaders = cache?.active_readers ?? 0
+  const idleSeconds = cache?.idle_seconds ?? 0
+  const warmPause = Boolean(cache?.warm_pause)
 
   return (
     <>
@@ -48,8 +51,22 @@ export default function DetailedView({
 
       <DetailedViewCacheSection>
         <SectionTitle color='#000' mb={20}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>{t('Cache')}</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+              <span>{t('Cache')}</span>
+              <Chip size='small' label={`${t('ActiveReaders')}: ${activeReaders}`} />
+              {idleSeconds > 0 && (
+                <Chip
+                  size='small'
+                  color={warmPause ? 'secondary' : 'default'}
+                  label={
+                    warmPause
+                      ? `${t('PauseIdle')}: ${idleSeconds}${t('SecondsShort')} · ${t('WarmPauseActive')}`
+                      : `${t('PauseIdle')}: ${idleSeconds}${t('SecondsShort')}`
+                  }
+                />
+              )}
+            </div>
 
             <FormControlLabel
               control={

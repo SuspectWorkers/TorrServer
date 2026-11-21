@@ -18,6 +18,7 @@ func SetupRoute(route gin.IRouter) {
 	authorized.GET("/shutdown/*reason", shutdown)
 
 	authorized.POST("/settings", settings)
+	authorized.GET("/logs", getLogs)
 	authorized.GET("/waf", getWAF)
 	authorized.GET("/mediabase", mediaBase)
 	authorized.POST("/waf", updateWAF)
